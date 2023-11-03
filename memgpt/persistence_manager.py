@@ -7,7 +7,7 @@ from .memory import (
     DummyArchivalMemory,
     DummyArchivalMemoryWithEmbeddings,
     DummyArchivalMemoryWithFaiss,
-    LocalArchivalMemory,
+    LocalArchivalMemory, LlamaIndexArchivalMemory,
 )
 from .utils import get_local_time, printd
 
@@ -101,18 +101,17 @@ class InMemoryStateManager(PersistenceManager):
         self.memory = new_memory
 
 
-class LocalStateManager(PersistenceManager):
+class LlamaIndexStateManager(PersistenceManager):
     """In-memory state manager has nothing to manage, all agents are held in-memory"""
 
     recall_memory_cls = DummyRecallMemory
-    archival_memory_cls = LocalArchivalMemory
 
-    def __init__(self, archival_memory_db=None):
+    def __init__(self, archival_memory):
         # Memory held in-state useful for debugging stateful versions
         self.memory = None
         self.messages = []
         self.all_messages = []
-        self.archival_memory = LocalArchivalMemory(archival_memory_database=archival_memory_db)
+        self.archival_memory = archival_memory
 
     @staticmethod
     def load(filename):
@@ -218,3 +217,18 @@ class InMemoryStateManagerWithFaiss(InMemoryStateManager):
         self.archival_memory = self.archival_memory_cls(
             index=self.archival_index, archival_memory_database=self.archival_memory_db, k=self.a_k
         )
+
+
+
+class LocalStateManager(LlamaIndexStateManager):
+    """In-memory state manager has nothing to manage, all agents are held in-memory"""
+
+    recall_memory_cls = DummyRecallMemory
+    archival_memory_cls = LocalArchivalMemory
+
+    def __init__(self, archival_memory_db=None):
+        # Memory held in-state useful for debugging stateful versions
+        self.memory = None
+        self.messages = []
+        self.all_messages = []
+        self.archival_memory = LocalArchivalMemory(archival_memory_database=archival_memory_db)

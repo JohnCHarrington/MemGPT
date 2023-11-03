@@ -640,7 +640,52 @@ class DummyRecallMemoryWithEmbeddings(DummyRecallMemory):
         return await self._text_search(async_get_embedding_with_backoff, query_string, count, start)
 
 
-class LocalArchivalMemory(ArchivalMemory):
+class LlamaIndexArchivalMemory(ArchivalMemory):
+    """Archival memory built on top of Llama Index"""
+
+    def __init__(self, index: VectorStoreIndex, retriever: VectorIndexRetriever, top_k: Optional[int] = 100):
+        """Init function for llama-index-based archival memory
+        """
+        self.top_k = top_k
+        self.index = index
+        self.retriever = retriever
+
+        # TODO: have some mechanism for cleanup otherwise will lead to OOM
+        self.cache = {}
+
+    def insert(self, memory_string):
+        self.index.insert(memory_string)
+
+
+    async def a_insert(self, memory_string):
+        return self.insert(memory_string)
+
+
+    def search(self, query_string, count=None, start=None):
+        start = start if start else 0
+        count = count if count else self.top_k
+        count = min(count + start, self.top_k)
+
+        if query_string not in self.cache:
+            self.cache[query_string] = self.retriever.retrieve(query_string)
+
+        results = self.cache[query_string][start: start + count]
+        results = [{"timestamp": get_local_time(), "content": node.node.text} for node in results]
+        # from pprint import pprint
+        # pprint(results)
+        return results, len(results)
+
+
+    async def a_search(self, query_string, count=None, start=None):
+        return self.search(query_string, count, start)
+
+
+    def __repr__(self) -> str:
+        print(self.index.ref_doc_info)
+        return ""
+
+
+class LocalArchivalMemory(LlamaIndexArchivalMemory):
     """Archival memory built on top of Llama Index"""
 
     def __init__(self, archival_memory_database: Optional[str] = None, top_k: Optional[int] = 100):
@@ -655,40 +700,15 @@ class LocalArchivalMemory(ArchivalMemory):
             directory = f"{MEMGPT_DIR}/archival/{archival_memory_database}"
             assert os.path.exists(directory), f"Archival memory database {archival_memory_database} does not exist"
             storage_context = StorageContext.from_defaults(persist_dir=directory)
-            self.index = load_index_from_storage(storage_context)
+            index = load_index_from_storage(storage_context)
         else:
-            self.index = VectorStoreIndex()
-        self.top_k = top_k
-        self.retriever = VectorIndexRetriever(
-            index=self.index,  # does this get refreshed?
-            similarity_top_k=self.top_k,
+            index = VectorStoreIndex()
+
+        retriever = VectorIndexRetriever(
+            index=index,  # does this get refreshed?
+            similarity_top_k=top_k,
         )
-        # TODO: have some mechanism for cleanup otherwise will lead to OOM
-        self.cache = {}
+        super().__init__(index, retriever, top_k)
 
-    def insert(self, memory_string):
-        self.index.insert(memory_string)
 
-    async def a_insert(self, memory_string):
-        return self.insert(memory_string)
 
-    def search(self, query_string, count=None, start=None):
-        start = start if start else 0
-        count = count if count else self.top_k
-        count = min(count + start, self.top_k)
-
-        if query_string not in self.cache:
-            self.cache[query_string] = self.retriever.retrieve(query_string)
-
-        results = self.cache[query_string][start : start + count]
-        results = [{"timestamp": get_local_time(), "content": node.node.text} for node in results]
-        # from pprint import pprint
-        # pprint(results)
-        return results, len(results)
-
-    async def a_search(self, query_string, count=None, start=None):
-        return self.search(query_string, count, start)
-
-    def __repr__(self) -> str:
-        print(self.index.ref_doc_info)
-        return ""
