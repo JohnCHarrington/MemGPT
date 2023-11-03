@@ -4,11 +4,15 @@ import io
 import logging
 import asyncio
 import os
+
+from llama_index.retrievers import AutoMergingRetriever
+from llama_index.storage.docstore import MongoDocumentStore
+from llama_index.vector_stores import MilvusVectorStore
 from prettytable import PrettyTable
 import questionary
 import openai
 
-from llama_index import set_global_service_context
+from llama_index import set_global_service_context, StorageContext, OpenAIEmbedding
 from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 
 import memgpt.interface  # for printing to terminal
@@ -20,8 +24,9 @@ import memgpt.constants as constants
 import memgpt.personas.personas as personas
 import memgpt.humans.humans as humans
 import memgpt.utils as utils
+from memgpt.memory import LlamaIndexArchivalMemory
 from memgpt.utils import printd
-from memgpt.persistence_manager import LocalStateManager
+from memgpt.persistence_manager import LocalStateManager, LlamaIndexStateManager
 from memgpt.config import MemGPTConfig, AgentConfig
 from memgpt.constants import MEMGPT_DIR
 from memgpt.agent import AgentAsync
@@ -129,7 +134,41 @@ def run(
         agent_config.attach_data_source(data_source)
 
         # TODO: allow configrable state manager (only local is supported right now)
-        persistence_manager = LocalStateManager(agent_config)  # TODO: insert dataset/pre-fill
+
+        docstore = MongoDocumentStore.from_uri(
+            uri="mongodb://mongodb", db_name="R4S", namespace='DocStore',
+        )
+        vector_store = MilvusVectorStore(
+            dim=1536,
+            overwrite=False,
+            uri="http://milvus:19530",
+            collection_name="R4S_Embeddings",
+        )
+
+        storage_context = StorageContext.from_defaults(
+            docstore=docstore, vector_store=vector_store
+        )
+        service_context = ServiceContext.from_defaults(
+            embed_model=OpenAIEmbedding(
+                model="text-embedding-ada-002",
+                engine="text-embedding-ada-002",
+            )
+        )
+
+        # Load nodes into vector index
+        index = VectorStoreIndex.from_vector_store(
+            vector_store=vector_store,
+            service_context=service_context,
+        )
+
+        # Define retrievers
+        # - Basic retriever on the vector index (cosine similarity)
+        # - Auto-merging retriever merges using hierarchical nodes
+        base_retriever = index.as_retriever(similarity_top_k=20)
+        retriever = AutoMergingRetriever(base_retriever, storage_context, verbose=True)
+
+        archival_memory = LlamaIndexArchivalMemory(retriever=retriever)
+        persistence_manager = LlamaIndexStateManager(archival_memory=archival_memory)  # TODO: insert dataset/pre-fill
 
         # save new agent config
         agent_config.save()
