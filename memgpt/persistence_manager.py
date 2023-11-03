@@ -8,7 +8,7 @@ from .memory import (
     DummyArchivalMemory,
     DummyArchivalMemoryWithEmbeddings,
     DummyArchivalMemoryWithFaiss,
-    LocalArchivalMemory,
+    LocalArchivalMemory, ArchivalMemory,
 )
 from .utils import get_local_time, printd
 
@@ -102,38 +102,22 @@ class InMemoryStateManager(PersistenceManager):
         self.memory = new_memory
 
 
-class LocalStateManager(PersistenceManager):
-    """In-memory state manager has nothing to manage, all agents are held in-memory"""
-
+class LlamaIndexStateManager(PersistenceManager):
     recall_memory_cls = DummyRecallMemory
-    archival_memory_cls = LocalArchivalMemory
 
-    def __init__(self, agent_config: AgentConfig):
+    def __init__(self, archival_memory: ArchivalMemory):
         # Memory held in-state useful for debugging stateful versions
         self.memory = None
         self.messages = []
         self.all_messages = []
-        self.archival_memory = LocalArchivalMemory(agent_config=agent_config)
-        self.agent_config = agent_config
+        self.archival_memory = archival_memory
 
     @staticmethod
     def load(filename, agent_config: AgentConfig):
-        """ Load a LocalStateManager from a file. """ ""
-        with open(filename, "rb") as f:
-            manager = pickle.load(f)
-
-        manager.archival_memory = LocalArchivalMemory(agent_config=agent_config)
-        return manager
+        raise NotImplementedError
 
     def save(self, filename):
-        with open(filename, "wb") as fh:
-            # TODO: fix this hacky solution to pickle the retriever
-            self.archival_memory.save()
-            self.archival_memory = None
-            pickle.dump(self, fh, protocol=pickle.HIGHEST_PROTOCOL)
-
-            # re-load archival (TODO: dont do this)
-            self.archival_memory = LocalArchivalMemory(agent_config=self.agent_config)
+        raise NotImplementedError
 
     def init(self, agent):
         printd(f"Initializing InMemoryStateManager with agent object")
@@ -179,6 +163,40 @@ class LocalStateManager(PersistenceManager):
     def update_memory(self, new_memory):
         printd(f"InMemoryStateManager.update_memory")
         self.memory = new_memory
+
+
+class LocalStateManager(LlamaIndexStateManager):
+    """In-memory state manager has nothing to manage, all agents are held in-memory"""
+
+    recall_memory_cls = DummyRecallMemory
+    archival_memory_cls = LocalArchivalMemory
+
+    def __init__(self, agent_config: AgentConfig):
+        # Memory held in-state useful for debugging stateful versions
+        self.memory = None
+        self.messages = []
+        self.all_messages = []
+        self.archival_memory = LocalArchivalMemory(agent_config=agent_config)
+        self.agent_config = agent_config
+
+    @staticmethod
+    def load(filename, agent_config: AgentConfig):
+        """ Load a LocalStateManager from a file. """ ""
+        with open(filename, "rb") as f:
+            manager = pickle.load(f)
+
+        manager.archival_memory = LocalArchivalMemory(agent_config=agent_config)
+        return manager
+
+    def save(self, filename):
+        with open(filename, "wb") as fh:
+            # TODO: fix this hacky solution to pickle the retriever
+            self.archival_memory.save()
+            self.archival_memory = None
+            pickle.dump(self, fh, protocol=pickle.HIGHEST_PROTOCOL)
+
+            # re-load archival (TODO: dont do this)
+            self.archival_memory = LocalArchivalMemory(agent_config=self.agent_config)
 
 
 class InMemoryStateManagerWithPreloadedArchivalMemory(InMemoryStateManager):
@@ -230,3 +248,4 @@ class InMemoryStateManagerWithFaiss(InMemoryStateManager):
         self.archival_memory = self.archival_memory_cls(
             index=self.archival_index, archival_memory_database=self.archival_memory_db, k=self.a_k
         )
+

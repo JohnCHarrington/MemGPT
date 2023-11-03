@@ -648,44 +648,12 @@ class DummyRecallMemoryWithEmbeddings(DummyRecallMemory):
         return self.text_search(query_string, count, start)
 
 
-class LocalArchivalMemory(ArchivalMemory):
+class LlamaIndexArchivalMemory(ArchivalMemory):
     """Archival memory built on top of Llama Index"""
 
-    def __init__(self, agent_config, top_k: Optional[int] = 100):
-        """Init function for archival memory
-
-        :param archiva_memory_database: name of dataset to pre-fill archival with
-        :type archival_memory_database: str
-        """
-
+    def __init__(self, retriever: VectorIndexRetriever, top_k: Optional[int] = 100):
         self.top_k = top_k
-        self.agent_config = agent_config
-
-        # locate saved index
-        if self.agent_config.data_source is not None:  # connected data source
-            directory = f"{MEMGPT_DIR}/archival/{self.agent_config.data_source}"
-            assert os.path.exists(directory), f"Archival memory database {self.agent_config.data_source} does not exist"
-        elif self.agent_config.name is not None:
-            directory = agent_config.save_agent_index_dir()
-            if not os.path.exists(directory):
-                # no existing archival storage
-                directory = None
-
-        # load/create index
-        if directory:
-            storage_context = StorageContext.from_defaults(persist_dir=directory)
-            self.index = load_index_from_storage(storage_context)
-        else:
-            self.index = EmptyIndex()
-
-        # create retriever
-        if isinstance(self.index, EmptyIndex):
-            self.retriever = None  # cant create retriever over empty indes
-        else:
-            self.retriever = VectorIndexRetriever(
-                index=self.index,  # does this get refreshed?
-                similarity_top_k=self.top_k,
-            )
+        self.retriever = retriever
 
         # TODO: have some mechanism for cleanup otherwise will lead to OOM
         self.cache = {}
@@ -698,18 +666,12 @@ class LocalArchivalMemory(ArchivalMemory):
         """Save the index to disk"""
         if self.agent_config.data_source:  # update original archival index
             # TODO: this corrupts the originally loaded data. do we want to do this?
-            utils.save_index(self.index, self.agent_config.data_source)
+            utils.save_index(self.retriever._index, self.agent_config.data_source)
         else:
-            utils.save_agent_index(self.index, self.agent_config)
+            utils.save_agent_index(self.retriever._index, self.agent_config)
 
     def insert(self, memory_string):
-        self.index.insert(memory_string)
-
-        # TODO: figure out if this needs to be refreshed (probably not)
-        self.retriever = VectorIndexRetriever(
-            index=self.index,
-            similarity_top_k=self.top_k,
-        )
+        self.retriever._index.insert(memory_string)
 
     async def a_insert(self, memory_string):
         return self.insert(memory_string)
@@ -736,8 +698,49 @@ class LocalArchivalMemory(ArchivalMemory):
         return self.search(query_string, count, start)
 
     def __repr__(self) -> str:
-        if isinstance(self.index, EmptyIndex):
+        if isinstance(self.retriever._index, EmptyIndex):
             memory_str = "<empty>"
         else:
-            memory_str = self.index.ref_doc_info
+            memory_str = self.retriever._index.ref_doc_info
         return f"\n### ARCHIVAL MEMORY ###" + f"\n{memory_str}"
+
+
+class LocalArchivalMemory(LlamaIndexArchivalMemory):
+
+    def __init__(self, agent_config, top_k: Optional[int] = 100):
+        """Init function for archival memory
+
+        :param archiva_memory_database: name of dataset to pre-fill archival with
+        :type archival_memory_database: str
+        """
+
+        self.top_k = top_k
+        self.agent_config = agent_config
+
+        # locate saved index
+        if self.agent_config.data_source is not None:  # connected data source
+            directory = f"{MEMGPT_DIR}/archival/{self.agent_config.data_source}"
+            assert os.path.exists(directory), f"Archival memory database {self.agent_config.data_source} does not exist"
+        elif self.agent_config.name is not None:
+            directory = agent_config.save_agent_index_dir()
+            if not os.path.exists(directory):
+                # no existing archival storage
+                directory = None
+
+        # load/create index
+        if directory:
+            storage_context = StorageContext.from_defaults(persist_dir=directory)
+            index = load_index_from_storage(storage_context)
+        else:
+            index = EmptyIndex()
+
+        # create retriever
+        if isinstance(index, EmptyIndex):
+            retriever = None  # cant create retriever over empty indes
+        else:
+            retriever = VectorIndexRetriever(
+                index=index,  # does this get refreshed?
+                similarity_top_k=self.top_k,
+            )
+
+        super().__init__(retriever, top_k)
