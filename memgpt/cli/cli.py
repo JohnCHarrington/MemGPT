@@ -47,6 +47,43 @@ class FakeWebsocket:
         return await asyncio.sleep(0)
 
 
+def load_database_manager():
+    docstore = MongoDocumentStore.from_uri(
+        uri="mongodb://mongodb", db_name="R4S", namespace='DocStore',
+    )
+    vector_store = MilvusVectorStore(
+        dim=1536,
+        overwrite=False,
+        uri="http://milvus:19530",
+        collection_name="R4S_Embeddings",
+    )
+
+    storage_context = StorageContext.from_defaults(
+        docstore=docstore, vector_store=vector_store
+    )
+    service_context = ServiceContext.from_defaults(
+        embed_model=OpenAIEmbedding(
+            model="text-embedding-ada-002",
+            engine="text-embedding-ada-002",
+        )
+    )
+
+    # Load nodes into vector index
+    index = VectorStoreIndex.from_vector_store(
+        vector_store=vector_store,
+        service_context=service_context,
+    )
+
+    # Define retrievers
+    # - Basic retriever on the vector index (cosine similarity)
+    # - Auto-merging retriever merges using hierarchical nodes
+    base_retriever = index.as_retriever(similarity_top_k=20)
+    retriever = AutoMergingRetriever(base_retriever, storage_context, verbose=True)
+
+    archival_memory = LlamaIndexArchivalMemory(retriever=retriever)
+    return LlamaIndexStateManager(archival_memory=archival_memory)  # TODO: insert dataset/pre-fill
+
+
 def run(
     persona: str = typer.Option(None, help="Specify persona"),
     agent: str = typer.Option(None, help="Specify agent save file"),
@@ -114,86 +151,38 @@ def run(
     set_global_service_context(service_context)
     sys.stdout = original_stdout
 
-    # create agent config
-    if agent and AgentConfig.exists(agent):  # use existing agent
-        typer.secho(f"Using existing agent {agent}", fg=typer.colors.GREEN)
-        agent_config = AgentConfig.load(agent)
-        printd("State path:", agent_config.save_state_dir())
-        printd("Persistent manager path:", agent_config.save_persistence_manager_dir())
-        printd("Index path:", agent_config.save_agent_index_dir())
-        # persistence_manager = LocalStateManager(agent_config).load() # TODO: implement load
-        # TODO: load prior agent state
-        assert not any(
-            [persona, human, model]
-        ), f"Cannot override existing agent state with command line arguments: {persona}, {human}, {model}"
 
-        # load existing agent
-        memgpt_agent = AgentAsync.load_agent(memgpt.interface, agent_config)
-    else:  # create new agent
-        # create new agent config: override defaults with args if provided
-        typer.secho("Creating new agent...", fg=typer.colors.GREEN)
-        agent_config = AgentConfig(
-            name=agent if agent else None,
-            persona=persona if persona else config.default_persona,
-            human=human if human else config.default_human,
-            model=model if model else config.model,
-            preset=preset if preset else config.preset,
-        )
+    # create new agent config: override defaults with args if provided
+    typer.secho("Creating new agent...", fg=typer.colors.GREEN)
+    agent_config = AgentConfig(
+        name=agent if agent else None,
+        persona=persona if persona else config.default_persona,
+        human=human if human else config.default_human,
+        model=model if model else config.model,
+        preset=preset if preset else config.preset,
+    )
 
-        # attach data source to agent
-        agent_config.attach_data_source(data_source)
+    # attach data source to agent
+    agent_config.attach_data_source(data_source)
 
-        # TODO: allow configrable state manager (only local is supported right now)
+    # TODO: allow configrable state manager (only local is supported right now)
 
-        docstore = MongoDocumentStore.from_uri(
-            uri="mongodb://mongodb", db_name="R4S", namespace='DocStore',
-        )
-        vector_store = MilvusVectorStore(
-            dim=1536,
-            overwrite=False,
-            uri="http://milvus:19530",
-            collection_name="R4S_Embeddings",
-        )
 
-        storage_context = StorageContext.from_defaults(
-            docstore=docstore, vector_store=vector_store
-        )
-        service_context = ServiceContext.from_defaults(
-            embed_model=OpenAIEmbedding(
-                model="text-embedding-ada-002",
-                engine="text-embedding-ada-002",
-            )
-        )
 
-        # Load nodes into vector index
-        index = VectorStoreIndex.from_vector_store(
-            vector_store=vector_store,
-            service_context=service_context,
-        )
+    # save new agent config
+    agent_config.save()
+    typer.secho(f"Created new agent {agent_config.name}.", fg=typer.colors.GREEN)
 
-        # Define retrievers
-        # - Basic retriever on the vector index (cosine similarity)
-        # - Auto-merging retriever merges using hierarchical nodes
-        base_retriever = index.as_retriever(similarity_top_k=20)
-        retriever = AutoMergingRetriever(base_retriever, storage_context, verbose=True)
-
-        archival_memory = LlamaIndexArchivalMemory(retriever=retriever)
-        persistence_manager = LlamaIndexStateManager(archival_memory=archival_memory)  # TODO: insert dataset/pre-fill
-
-        # save new agent config
-        agent_config.save()
-        typer.secho(f"Created new agent {agent_config.name}.", fg=typer.colors.GREEN)
-
-        # create agent
-        memgpt_agent = presets.use_preset(
-            agent_config.preset,
-            agent_config,
-            agent_config.model,
-            utils.get_persona_text(agent_config.persona),
-            utils.get_human_text(agent_config.human),
-            memgpt.interface,
-            persistence_manager,
-        )
+    # create agent
+    memgpt_agent = presets.use_preset(
+        agent_config.preset,
+        agent_config,
+        agent_config.model,
+        utils.get_persona_text(agent_config.persona),
+        utils.get_human_text(agent_config.human),
+        memgpt.interface,
+        load_database_manager(),
+    )
 
     # start event loop
     from memgpt.main import run_agent_loop
